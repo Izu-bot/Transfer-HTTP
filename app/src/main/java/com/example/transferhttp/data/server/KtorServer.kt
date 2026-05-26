@@ -19,6 +19,7 @@ import io.ktor.server.request.receiveMultipart
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
+import io.ktor.server.response.respondOutputStream
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -32,8 +33,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.io.readByteArray
+import java.io.File
 import java.net.NetworkInterface
 import java.util.Collections
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -77,17 +81,35 @@ class KtorServer @Inject constructor(
                                 return@get
                             }
 
-                            val file = storageRepository.getFile(filePath)
-                            if (file != null) {
+                            val targetFile = File(filePath)
+                            if (!targetFile.exists()) {
+                                call.respond(HttpStatusCode.NotFound, "O item solicitado não existe.")
+                                return@get
+                            }
+
+                            if (targetFile.isDirectory) {
                                 call.response.header(
                                     HttpHeaders.ContentDisposition,
                                     ContentDisposition
                                         .Attachment
-                                        .withParameter(ContentDisposition.Parameters.FileName, file.name).toString()
+                                        .withParameter(
+                                            ContentDisposition.Parameters.FileName,
+                                            "${targetFile.name}.zip").toString()
                                 )
-                                call.respondFile(file)
+
+                                call.respondOutputStream(ContentType.Application.Zip) {
+                                    ZipOutputStream(this).use { zipOut ->
+                                        zipFolderHelper(targetFile, targetFile.name, zipOut)
+                                    }
+                                }
                             } else {
-                                call.respond(HttpStatusCode.NotFound, "Arquivo não encontrado.")
+                                call.response.header(
+                                    HttpHeaders.ContentDisposition,
+                                    ContentDisposition
+                                        .Attachment
+                                        .withParameter(ContentDisposition.Parameters.FileName, targetFile.name).toString()
+                                )
+                                call.respondFile(targetFile)
                             }
                         }
 
@@ -110,6 +132,8 @@ class KtorServer @Inject constructor(
 
                         post("/api/upload") {
                             val targetPath = call.queryParameters["path"] ?: storageRepository.getRootDirPath()
+                            val relativePath = call.queryParameters["relativePath"]
+
                             val multipart = call.receiveMultipart()
                             var uploadSuccess = false
 
@@ -118,8 +142,21 @@ class KtorServer @Inject constructor(
                                     val fileName = part.originalFileName ?: "arquivo_enviado"
                                     val fileBytes = part.provider().readRemaining().readByteArray()
 
-                                    uploadSuccess =
-                                        storageRepository.saveFile(targetPath, fileName, fileBytes)
+                                    try {
+                                        val destinationFile = if (!relativePath.isNullOrBlank()) {
+                                            val fileLocation = File(targetPath, relativePath)
+                                            fileLocation.parentFile?.mkdirs()
+                                            fileLocation
+                                        } else {
+                                            File(targetPath, fileName)
+                                        }
+
+                                        destinationFile.writeBytes(fileBytes)
+                                        uploadSuccess = true
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                        uploadSuccess = false
+                                    }
                                 }
                                 part.release()
                             }
@@ -171,5 +208,23 @@ class KtorServer @Inject constructor(
         }
 
         return null
+    }
+
+    private fun zipFolderHelper(fileToZip: File, fileName: String, zipOut: ZipOutputStream) {
+        if (fileToZip.isHidden) return
+
+        if (fileToZip.isDirectory) {
+            val children = fileToZip.listFiles() ?: return
+
+            if (children.isEmpty()) {
+                zipOut.putNextEntry(ZipEntry("$fileName/"))
+                zipOut.closeEntry()
+            } else {
+                for (childFile in children) {
+                    zipFolderHelper(childFile, "$fileName/${childFile.name}", zipOut)
+                                    }
+            }
+        }
+        return
     }
 }

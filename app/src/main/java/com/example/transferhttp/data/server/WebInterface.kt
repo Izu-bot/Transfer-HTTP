@@ -8,7 +8,7 @@ object WebInterface {
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>Transfer HTTP - Gestor de Diretórios</title>
-<style>
+            <style>
                 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
                 body { background-color: #f4f6f9; color: #333; padding: 20px; display: flex; flex-direction: column; min-height: 100vh; }
                 .container { max-width: 1000px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); flex: 1; width: 100%; }
@@ -22,6 +22,8 @@ object WebInterface {
                 .btn-danger:hover { background: #c0392b; }
                 .btn-success { background: #2ecc71; }
                 .btn-success:hover { background: #27ae60; }
+                .btn-warning { background: #f39c12; }
+                .btn-warning:hover { background: #d35400; }
                 table { width: 100%; border-collapse: collapse; margin-top: 10px; }
                 th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
                 th { background-color: #f8f9fa; color: #555; }
@@ -30,7 +32,7 @@ object WebInterface {
                 .folder { color: #f39c12; cursor: pointer; font-weight: bold; }
                 .file { color: #2c3e50; }
                 .empty-msg { text-align: center; color: #7f8c8d; padding: 20px; }
-                #fileInput { display: none; }
+                #fileInput, #folderInput { display: none; }
                 
                 /* ESTILOS DO FOOTER */
                 footer { text-align: center; padding: 20px 0; margin-top: 30px; color: #7f8c8d; font-size: 14px; border-top: 1px solid #e1e8ed; width: 100%; }
@@ -51,10 +53,13 @@ object WebInterface {
                 <header>
                     <h1>Transfer HTTP - Armazenamento</h1>
                     <div class="actions">
-                        <button type="button" onclick="document.getElementById('fileInput').click()" class="btn-success">▲ Enviar Diretório</button>
+                        <button type="button" onclick="document.getElementById('fileInput').click()" class="btn-success">▲ Enviar Arquivo</button>
+                        <button type="button" onclick="document.getElementById('folderInput').click()" class="btn-success">▲ Enviar Diretório</button>
                         <button type="button" onclick="createNewFolder()">+ Nova Pasta</button>
                         <button type="button" onclick="goBack()" class="btn-danger">◀ Voltar</button>
+                        
                         <input type="file" id="fileInput" onchange="uploadFile()" />
+                        <input type="file" id="folderInput" webkitdirectory directory multiple onchange="uploadFolder()" />
                     </div>
                 </header>
 
@@ -125,8 +130,6 @@ object WebInterface {
 
                     files.forEach(file => {
                         const tr = document.createElement('tr');
-                        
-                        // Proteção contra caminhos com aspas simples (ex: "Pasta d'agua")
                         const safePath = file.path.replace(/'/g, "\\'");
                         
                         const tdName = document.createElement('td');
@@ -140,10 +143,13 @@ object WebInterface {
                         tdSize.innerText = file.isDirectory ? "-" : formatBytes(file.size);
 
                         const tdActions = document.createElement('td');
-                        if (!file.isDirectory) {
-                            tdActions.innerHTML = `<a href="/api/download?path=${encodeURIComponent(file.path)}" class="btn" style="padding: 5px 10px; font-size: 12px;">Download</a>`;
+                        const downloadUrl = `/api/download?path=${encodeURIComponent(file.path)}`;
+                        
+                        // Diferenciação visual: Pastas ganham a opção de baixar o empacotamento ZIP
+                        if (file.isDirectory) {
+                            tdActions.innerHTML = `<a href="${downloadUrl}" class="btn btn-warning" style="padding: 5px 10px; font-size: 12px;">Baixar ZIP</a>`;
                         } else {
-                            tdActions.innerText = "-";
+                            tdActions.innerHTML = `<a href="${downloadUrl}" class="btn" style="padding: 5px 10px; font-size: 12px;">Download</a>`;
                         }
 
                         tr.appendChild(tdName);
@@ -198,13 +204,13 @@ object WebInterface {
                     formData.append("file", file);
 
                     try {
-                        document.getElementById('currentPathLabel').innerText = "A enviar diretório... Por favor, aguarde.";
+                        document.getElementById('currentPathLabel').innerText = "A enviar ficheiro... Por favor, aguarde.";
                         const response = await fetch(`/api/upload?path=${encodeURIComponent(currentPath)}`, { method: 'POST', body: formData });
 
                         if (response.ok) {
-                            alert("Diretório enviado com sucesso!");
+                            alert("Ficheiro enviado com sucesso!");
                         } else {
-                            alert("Falha no upload do diretório.");
+                            alert("Falha no upload do ficheiro.");
                         }
                         loadFiles(currentPath);
                     } catch (error) {
@@ -212,6 +218,39 @@ object WebInterface {
                         loadFiles(currentPath);
                     }
                     fileInput.value = "";
+                }
+
+                // Lógica assíncrona para upload de estruturas complexas de pastas
+                async function uploadFolder() {
+                    const folderInput = document.getElementById('folderInput');
+                    const files = folderInput.files;
+                    if (files.length === 0) return;
+
+                    const totalFiles = files.length;
+                    const pathLabel = document.getElementById('currentPathLabel');
+
+                    for (let i = 0; i < totalFiles; i++) {
+                        const file = files[i];
+                        const formData = new FormData();
+                        formData.append("file", file);
+
+                        // Captura caminhos relativos internos do PC (Ex: "MinhaMusica/Rock/song.mp3")
+                        const relativePath = file.webkitRelativePath;
+                        pathLabel.innerText = `A enviar diretório: [${i + 1}/${totalFiles}] - ${file.name}`;
+
+                        try {
+                            await fetch(`/api/upload?path=${encodeURIComponent(currentPath)}&relativePath=${encodeURIComponent(relativePath)}`, {
+                                method: 'POST',
+                                body: formData
+                            });
+                        } catch (error) {
+                            console.error("Erro ao enviar item da árvore:", file.name, error);
+                        }
+                    }
+
+                    alert("Diretório enviado com sucesso!");
+                    loadFiles(currentPath);
+                    folderInput.value = "";
                 }
 
                 function formatBytes(bytes, decimals = 2) {
